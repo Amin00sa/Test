@@ -1,4 +1,3 @@
-# Test
 use App\Models\NewModel;
 
 // Fake Data
@@ -30,7 +29,13 @@ $fakeData = [
 // Simulate processing your fake data
 $groupedData = collect($fakeData);
 
-// Use Laravel's collection methods to transpose the data
+// Filter based on validated data
+$validatedData = [
+    'key' => null,
+    'value' => null,
+];
+
+// Use Laravel's collection methods to transpose and filter the data
 $transposedData = $groupedData
     ->flatMap(function ($externalDataBase) {
         return $externalDataBase['externalDataBase']['entries']->flatMap(function ($entry) use ($externalDataBase) {
@@ -46,8 +51,14 @@ $transposedData = $groupedData
     ->groupBy(function ($item, $key) use ($fakeData) {
         return $fakeData[$key]['externalDataBase']['entries']['name'];
     })
+    ->map(function ($group) use ($validatedData) {
+        return $group->filter(function ($dataEntry) use ($validatedData) {
+            return (is_null($validatedData['key']) || $dataEntry['key'] === $validatedData['key'])
+                && (is_null($validatedData['value']) || str_contains($dataEntry['value'], $validatedData['value']));
+        });
+    })
     ->values()
     ->toArray();
 
-// Display the transposed data
+// Display the transposed and filtered data
 dd($transposedData);
