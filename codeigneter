@@ -1,0 +1,276 @@
+1. Setup Directory Structure
+Create directories for your services and repositories:
+application/services
+application/repositories
+2. Create a Repository
+A repository interacts with the database and encapsulates data access logic.
+<?php
+defined('BASEPATH') OR exit('No direct script access allowed');
+
+class UserRepository {
+    protected $CI;
+
+    public function __construct() {
+        $this->CI =& get_instance();
+        $this->CI->load->database();
+    }
+
+    public function getUserById($id) {
+        $query = $this->CI->db->get_where('users', array('id' => $id));
+        return $query->row();
+    }
+
+    public function createUser($data) {
+        return $this->CI->db->insert('users', $data);
+    }
+
+    public function updateUser($id, $data) {
+        $this->CI->db->where('id', $id);
+        return $this->CI->db->update('users', $data);
+    }
+
+    public function deleteUser($id) {
+        $this->CI->db->where('id', $id);
+        return $this->CI->db->delete('users');
+    }
+}
+3. Create a Service
+A service handles business logic and calls repository methods.
+<?php
+defined('BASEPATH') OR exit('No direct script access allowed');
+
+class UserService {
+    protected $userRepository;
+
+    public function __construct() {
+        $this->CI =& get_instance();
+        $this->CI->load->model('UserRepository', 'userRepository');
+        $this->userRepository = $this->CI->userRepository;
+    }
+
+    public function getUser($id) {
+        return $this->userRepository->getUserById($id);
+    }
+
+    public function registerUser($data) {
+        // Business logic, e.g., hashing passwords
+        $data['password'] = password_hash($data['password'], PASSWORD_BCRYPT);
+        return $this->userRepository->createUser($data);
+    }
+
+    public function updateUser($id, $data) {
+        return $this->userRepository->updateUser($id, $data);
+    }
+
+    public function deleteUser($id) {
+        return $this->userRepository->deleteUser($id);
+    }
+}
+4. Load Services and Repositories in Controllers
+In your controller, load the service and use it to handle user requests.
+<?php
+defined('BASEPATH') OR exit('No direct script access allowed');
+
+class UserController extends CI_Controller {
+
+    public function __construct() {
+        parent::__construct();
+        $this->load->library('UserService', null, 'userService');
+    }
+
+    public function getUser($id) {
+        $user = $this->userService->getUser($id);
+        if ($user) {
+            $this->load->view('user_view', array('user' => $user));
+        } else {
+            show_404();
+        }
+    }
+
+    public function registerUser() {
+        $data = $this->input->post();
+        $result = $this->userService->registerUser($data);
+        if ($result) {
+            redirect('user/success');
+        } else {
+            redirect('user/failure');
+        }
+    }
+
+    public function updateUser($id) {
+        $data = $this->input->post();
+        $result = $this->userService->updateUser($id, $data);
+        if ($result) {
+            redirect('user/success');
+        } else {
+            redirect('user/failure');
+        }
+    }
+
+    public function deleteUser($id) {
+        $result = $this->userService->deleteUser($id);
+        if ($result) {
+            redirect('user/success');
+        } else {
+            redirect('user/failure');
+        }
+    }
+}
+5. Update config/autoload.php
+$autoload['libraries'] = array('database', 'UserService');
+$autoload['model'] = array('UserRepository');
+\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
+1. Define Repository Interface
+Define an interface for the repository that outlines the methods it should implement.
+<?php
+defined('BASEPATH') OR exit('No direct script access allowed');
+
+interface UserRepositoryInterface {
+    public function getUserById($id);
+    public function createUser($data);
+    public function updateUser($id, $data);
+    public function deleteUser($id);
+}
+
+<?php
+defined('BASEPATH') OR exit('No direct script access allowed');
+
+interface UserServiceInterface {
+    public function getUser($id);
+    public function registerUser($data);
+    public function updateUser($id, $data);
+    public function deleteUser($id);
+}
+2. Implement the Repository Interface
+<?php
+defined('BASEPATH') OR exit('No direct script access allowed');
+
+require_once APPPATH . 'interfaces/UserServiceInterface.php';
+require_once APPPATH . 'repositories/UserRepository.php';
+
+class UserService implements UserServiceInterface {
+    protected $userRepository;
+
+    public function __construct(UserRepositoryInterface $userRepository) {
+        $this->userRepository = $userRepository;
+    }
+
+    public function getUser($id) {
+        return $this->userRepository->getUserById($id);
+    }
+
+    public function registerUser($data) {
+        // Business logic, e.g., hashing passwords
+        $data['password'] = password_hash($data['password'], PASSWORD_BCRYPT);
+        return $this->userRepository->createUser($data);
+    }
+
+    public function updateUser($id, $data) {
+        return $this->userRepository->updateUser($id, $data);
+    }
+
+    public function deleteUser($id) {
+        return $this->userRepository->deleteUser($id);
+    }
+}
+<?php
+defined('BASEPATH') OR exit('No direct script access allowed');
+
+require_once APPPATH . 'interfaces/UserRepositoryInterface.php';
+
+class UserRepository implements UserRepositoryInterface {
+    protected $CI;
+
+    public function __construct() {
+        $this->CI =& get_instance();
+        $this->CI->load->database();
+    }
+
+    public function getUserById($id) {
+        $query = $this->CI->db->get_where('users', array('id' => $id));
+        return $query->row();
+    }
+
+    public function createUser($data) {
+        return $this->CI->db->insert('users', $data);
+    }
+
+    public function updateUser($id, $data) {
+        $this->CI->db->where('id', $id);
+        return $this->CI->db->update('users', $data);
+    }
+
+    public function deleteUser($id) {
+        $this->CI->db->where('id', $id);
+        return $this->CI->db->delete('users');
+    }
+}
+<?php
+defined('BASEPATH') OR exit('No direct script access allowed');
+3. Modify controller
+<?php
+defined('BASEPATH') OR exit('No direct script access allowed');
+
+require_once APPPATH . 'repositories/UserRepository.php';
+require_once APPPATH . 'libraries/UserService.php';
+
+class UserController extends CI_Controller {
+
+    protected $userService;
+
+    public function __construct() {
+        parent::__construct();
+        // Manually load the UserRepository
+        $userRepository = new UserRepository();
+        // Manually load the UserService with the UserRepository instance
+        $this->userService = new UserService($userRepository);
+    }
+
+    public function getUser($id) {
+        $user = $this->userService->getUser($id);
+        if ($user) {
+            $this->load->view('user_view', array('user' => $user));
+        } else {
+            show_404();
+        }
+    }
+
+    public function registerUser() {
+        $data = $this->input->post();
+        $result = $this->userService->registerUser($data);
+        if ($result) {
+            redirect('user/success');
+        } else {
+            redirect('user/failure');
+        }
+    }
+
+    public function updateUser($id) {
+        $data = $this->input->post();
+        $result = $this->userService->updateUser($id, $data);
+        if ($result) {
+            redirect('user/success');
+        } else {
+            redirect('user/failure');
+        }
+    }
+
+    public function deleteUser($id) {
+        $result = $this->userService->deleteUser($id);
+        if ($result) {
+            redirect('user/success');
+        } else {
+            redirect('user/failure');
+        }
+    }
+}
+4. Add those in index.php
+require_once APPPATH . 'interfaces/UserServiceInterface.php';
+require_once APPPATH . 'interfaces/UserRepositoryInterface.php';
+require_once APPPATH . 'repositories/UserRepository.php';
+require_once APPPATH . 'libraries/UserService.php';
+5. Ensure of application/config/autoload.php
+$autoload['libraries'] = array('database');
+$autoload['model'] = array();
+$autoload['helper'] = array();
+
