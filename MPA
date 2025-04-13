@@ -1,0 +1,269 @@
+# Implémentation MFA avec Token à 6 Chiffres (Style Binance)
+
+Voici une solution complète pour implémenter un système MFA avec code à 6 chiffres envoyé par email, similaire à Binance, avec gestion sécurisée des tokens :
+
+## 1. Structure de Base de Données
+
+```sql
+ALTER TABLE users ADD COLUMN mfa_code VARCHAR(6) DEFAULT NULL;
+ALTER TABLE users ADD COLUMN mfa_code_expiry DATETIME DEFAULT NULL;
+ALTER TABLE users ADD COLUMN mfa_code_attempts TINYINT(1) DEFAULT 0;
+ALTER TABLE users ADD COLUMN mfa_code_blocked_until DATETIME DEFAULT NULL;
+```
+
+## 2. Helper MFA Sécurisé
+
+```php
+// application/helpers/mfa_helper.php
+if (!defined('BASEPATH')) exit('No direct script access allowed');
+
+if (!function_exists('generate_mfa_code')) {
+    function generate_mfa_code() {
+        return str_pad(random_int(0, 999999), 6, '0', STR_PAD_LEFT);
+    }
+}
+
+if (!function_exists('send_mfa_email')) {
+    function send_mfa_email($email, $code) {
+        $CI =& get_instance();
+        $CI->load->library('email');
+        
+        $message = "Votre code de vérification Binance est : $code\n\n";
+        $message .= "Ce code est valable 10 minutes. Ne le partagez avec personne.\n\n";
+        $message .= "Si vous n'avez pas demandé ce code, ignorez cet email.";
+
+        $CI->email->from('no-reply@votredomaine.com', 'Sécurité Binance');
+        $CI->email->to($email);
+        $CI->email->subject('Votre code de vérification (valable 10 minutes)');
+        $CI->email->message($message);
+        
+        return $CI->email->send();
+    }
+}
+```
+
+## 3. Modèle Utilisateur
+
+```php
+// application/models/User_model.php
+public function generate_and_save_mfa_code($user_id) {
+    // Nettoyer les anciens codes
+    $this->db->where('id', $user_id);
+    $this->db->update('users', [
+        'mfa_code' => NULL,
+        'mfa_code_expiry' => NULL,
+        'mfa_code_attempts' => 0
+    ]);
+
+    // Générer nouveau code
+    $code = generate_mfa_code();
+    $expiry = date('Y-m-d H:i:s', strtotime('+10 minutes'));
+
+    $this->db->where('id', $user_id);
+    $this->db->update('users', [
+        'mfa_code' => password_hash($code, PASSWORD_BCRYPT),
+        'mfa_code_expiry' => $expiry,
+        'mfa_code_attempts' => 0,
+        'mfa_code_blocked_until' => NULL
+    ]);
+
+    return $code;
+}
+
+public function verify_mfa_code($user_id, $input_code) {
+    // Vérifier si le compte est bloqué temporairement
+    $user = $this->db->get_where('users', ['id' => $user_id])->row();
+    
+    if ($user->mfa_code_blocked_until && strtotime($user->mfa_code_blocked_until) > time()) {
+        return [
+            'success' => false,
+            'message' => 'Trop de tentatives. Veuillez réessayer après '.date('H:i', strtotime($user->mfa_code_blocked_until))
+        ];
+    }
+
+    // Vérifier l'expiration du code
+    if (strtotime($user->mfa_code_expiry) < time()) {
+        return [
+            'success' => false,
+            'message' => 'Code expiré. Veuillez demander un nouveau code.'
+        ];
+    }
+
+    // Vérifier le code
+    if (password_verify($input_code, $user->mfa_code)) {
+        // Code valide - réinitialiser les tentatives
+        $this->db->where('id', $user_id);
+        $this->db->update('users', [
+            'mfa_code_attempts' => 0,
+            'mfa_code_blocked_until' => NULL
+        ]);
+        
+        return ['success' => true];
+    } else {
+        // Code invalide - incrémenter les tentatives
+        $attempts = $user->mfa_code_attempts + 1;
+        $block_until = null;
+        
+        if ($attempts >= 3) {
+            $block_until = date('Y-m-d H:i:s', strtotime('+30 minutes'));
+        }
+        
+        $this->db->where('id', $user_id);
+        $this->db->update('users', [
+            'mfa_code_attempts' => $attempts,
+            'mfa_code_blocked_until' => $block_until
+        ]);
+        
+        $remaining_attempts = 3 - $attempts;
+        $message = $remaining_attempts > 0 
+            ? "Code incorrect. Il vous reste $remaining_attempts tentative(s)." 
+            : "Trop de tentatives. Votre compte est bloqué pendant 30 minutes.";
+        
+        return [
+            'success' => false,
+            'message' => $message
+        ];
+    }
+}
+```
+
+## 4. Contrôleur d'Authentification
+
+```php
+// application/controllers/Auth.php
+public function send_mfa_code() {
+    $this->load->model('User_model');
+    
+    // Vérifier d'abord l'email/mot de passe
+    $user = $this->User_model->authenticate(
+        $this->input->post('email'),
+        $this->input->post('password')
+    );
+    
+    if (!$user) {
+        $this->session->set_flashdata('error', 'Identifiants incorrects');
+        redirect('auth/login');
+    }
+    
+    // Générer et envoyer le code
+    $code = $this->User_model->generate_and_save_mfa_code($user->id);
+    send_mfa_email($user->email, $code);
+    
+    // Stocker l'ID utilisateur en session pour la vérification
+    $this->session->set_userdata('mfa_user_id', $user->id);
+    
+    // Afficher la page de saisie du code
+    $this->load->view('auth/mfa_verify');
+}
+
+public function verify_mfa_code() {
+    $user_id = $this->session->userdata('mfa_user_id');
+    $input_code = $this->input->post('code');
+    
+    $result = $this->User_model->verify_mfa_code($user_id, $input_code);
+    
+    if ($result['success']) {
+        // Code valide - connecter l'utilisateur
+        $this->session->set_userdata('user_id', $user_id);
+        $this->session->set_flashdata('success', 'Connexion réussie');
+        redirect('dashboard');
+    } else {
+        // Code invalide
+        $this->session->set_flashdata('error', $result['message']);
+        $this->load->view('auth/mfa_verify');
+    }
+}
+
+public function resend_mfa_code() {
+    $user_id = $this->session->userdata('mfa_user_id');
+    
+    if (!$user_id) {
+        redirect('auth/login');
+    }
+    
+    $code = $this->User_model->generate_and_save_mfa_code($user_id);
+    $user = $this->User_model->get_user($user_id);
+    send_mfa_email($user->email, $code);
+    
+    $this->session->set_flashdata('success', 'Nouveau code envoyé');
+    $this->load->view('auth/mfa_verify');
+}
+```
+
+## 5. Vue MFA (mfa_verify.php)
+
+```html
+<div class="container">
+    <div class="row justify-content-center mt-5">
+        <div class="col-md-6 col-lg-4">
+            <div class="card shadow">
+                <div class="card-body">
+                    <h3 class="card-title text-center mb-4">Vérification en 2 étapes</h3>
+                    
+                    <?php if($this->session->flashdata('error')): ?>
+                        <div class="alert alert-danger"><?= $this->session->flashdata('error') ?></div>
+                    <?php endif; ?>
+                    
+                    <?php if($this->session->flashdata('success')): ?>
+                        <div class="alert alert-success"><?= $this->session->flashdata('success') ?></div>
+                    <?php endif; ?>
+                    
+                    <p class="text-center">Nous avons envoyé un code à 6 chiffres à votre adresse email.</p>
+                    
+                    <form action="<?= site_url('auth/verify_mfa_code') ?>" method="post">
+                        <div class="form-group">
+                            <label for="code">Code de vérification</label>
+                            <input type="text" 
+                                   class="form-control form-control-lg text-center" 
+                                   id="code" 
+                                   name="code" 
+                                   maxlength="6" 
+                                   pattern="\d{6}" 
+                                   required
+                                   autocomplete="off"
+                                   autofocus>
+                        </div>
+                        
+                        <button type="submit" class="btn btn-primary btn-block mt-3">Vérifier</button>
+                    </form>
+                    
+                    <div class="text-center mt-3">
+                        <p>Vous n'avez pas reçu de code ?</p>
+                        <a href="<?= site_url('auth/resend_mfa_code') ?>" class="btn btn-link">Renvoyer le code</a>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+// Auto-submit quand 6 caractères saisis
+document.getElementById('code').addEventListener('input', function(e) {
+    if (this.value.length === 6) {
+        this.form.submit();
+    }
+});
+</script>
+```
+
+## Fonctionnalités Clés
+
+1. **Sécurité Renforcée** :
+   - Codes à usage unique valables 10 minutes
+   - Protection contre les attaques par force brute (blocage après 3 tentatives)
+   - Stockage sécurisé des codes (hashés avec bcrypt)
+   - Limitation des renvois de code
+
+2. **Expérience Utilisateur** :
+   - Interface similaire à Binance
+   - Auto-soumission du formulaire
+   - Messages d'erreur clairs
+   - Option de renvoi de code
+
+3. **Journalisation** :
+   - Nombre de tentatives enregistrées
+   - Durée de blocage temporaire
+   - Expiration des codes gérée
+
+Cette implémentation offre un équilibre optimal entre sécurité et convivialité, tout en s'inspirant des bonnes pratiques de Binance.
