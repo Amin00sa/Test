@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Integrated Spinner-Counter</title>
+    <style>
+      body {
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        height: 100vh;
+        margin: 0;
+        background: #f7f7f7;
+        font-family: 'Segoe UI', system-ui, sans-serif;
+      }
+
+      .progress-spinner {
+        position: relative;
+        width: 48px;
+        height: 48px;
+      }
+
+      .progress-track {
+        fill: none;
+        stroke: #e0e0e0;
+        stroke-width: 4;
+      }
+
+      .progress-bar {
+        fill: none;
+        stroke: #1a73e8;
+        stroke-width: 4;
+        stroke-linecap: round;
+        transform-origin: center;
+        transform: rotate(-90deg);
+        transition: stroke-dashoffset 0.3s linear;
+      }
+
+      .progress-text {
+        position: absolute;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        font-size: 14px;
+        font-weight: 500;
+        color: #202124;
+      }
+
+      .progress-text.expired {
+        color: #d93025;
+      }
+
+      .progress-spinner.expired .progress-bar {
+        stroke: #d93025;
+        animation: pulse 0.5s infinite alternate;
+      }
+
+      @keyframes pulse {
+        to { opacity: 0.6; }
+      }
+    </style>
+</head>
+<body>
+<div class="progress-spinner" id="spinner">
+    <svg viewBox="0 0 36 36">
+        <circle class="progress-track" cx="18" cy="18" r="16"/>
+        <circle class="progress-bar" cx="18" cy="18" r="16"
+                stroke-dasharray="100" stroke-dashoffset="0" id="progress"/>
+    </svg>
+    <div class="progress-text" id="counter">45</div>
+</div>
+
+<script>
+  const duration = 45;
+  let timeLeft = duration;
+  const counter = document.getElementById('counter');
+  const progress = document.getElementById('progress');
+  const spinner = document.getElementById('spinner');
+
+  const circumference = 2 * Math.PI * 16;
+  progress.style.strokeDasharray = circumference;
+
+  const update = () => {
+    const percent = timeLeft / duration;
+    progress.style.strokeDashoffset = circumference * (1 - percent);
+    counter.textContent = timeLeft;
+
+    if (timeLeft <= 10) {
+      counter.classList.add('expired');
+    }
+
+    if (timeLeft <= 0) {
+      clearInterval(timer);
+      counter.textContent = "!";
+      spinner.classList.add('expired');
+    }
+
+    timeLeft--;
+  };
+
+  update(); // Initial render
+  const timer = setInterval(update, 1000);
+</script>
+</body>
+</html>
