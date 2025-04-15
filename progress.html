@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Indeterminate Progress Bar</title>
+    <style>
+      body {
+        font-family: Arial, sans-serif;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        height: 100vh;
+        margin: 0;
+        background-color: #f5f5f5;
+      }
+
+      .progress-container {
+        width: 80%;
+        max-width: 400px;
+      }
+
+      .progress-label {
+        margin-bottom: 8px;
+        color: #333;
+      }
+
+      .progress-bar {
+        width: 100%;
+        height: 8px;
+        background-color: #e0e0e0;
+        border-radius: 4px;
+        overflow: hidden;
+      }
+
+      .progress-indicator {
+        height: 100%;
+        width: 50%;
+        background-color: #4285f4;
+        border-radius: 4px;
+        animation: indeterminate-progress 2s infinite ease-in-out;
+      }
+
+      @keyframes indeterminate-progress {
+        0% {
+          transform: translateX(-100%) scaleX(0.5);
+        }
+        50% {
+          transform: translateX(0%) scaleX(1);
+        }
+        100% {
+          transform: translateX(100%) scaleX(0.5);
+        }
+      }
+    </style>
+</head>
+<body>
+<div class="progress-container">
+    <div class="progress-label">Loading...</div>
+    <div class="progress-bar">
+        <div class="progress-indicator"></div>
+    </div>
+</div>
+</body>
+</html>
