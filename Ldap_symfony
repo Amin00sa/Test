@@ -1,0 +1,543 @@
+Nice—you want a JWT-auth flow in Symfony that uses LDAP to AD, stores a local Employe entity (with username and roles), and returns a token containing the same kind of info LexikJWTBundle would put in the token, but without using that package. I’ll give you a self-contained blueprint with code you can drop into a Symfony app (adjust names to your project). Quick caveat: building JWT handling by hand is doable but error-prone. If possible, consider using LexikJWTAuthenticationBundle or Symfony's JWT components for production-ready security. That said, here’s a clean, minimal approach you can adapt.
+
+Plan (high level)
+- LDAP login: authenticate the user against Active Directory using LDAP (no bundle).
+- Local user: map AD user to a local Employe entity (username + roles). Create on first login if needed.
+- JWT: generate a token with header {"alg":"HS256","typ":"JWT"} and payload containing sub (user id), username, roles, iss, iat, exp.
+- Protected routes: add a simple JWT authenticator (Guard-style) that checks Authorization: Bearer <token>, decodes, verifies signature/exp, and loads the Employe as the authenticated user.
+- Token payload: include sub (id), username, roles, iss, iat, exp (same spirit as LexikJWTBundle).
+
+What you’ll need (quick checklist)
+- PHP with LDAP extension enabled (or you can adapt to the Symfony LDAP component, but this example uses PHP LDAP).
+- Doctrine configured with an Employe entity.
+- Environment variables for JWT secret and LDAP AD connection (host, base DN, service account DN/password).
+- Symfony 5.x/6.x (this approach uses a Guard-like authenticator; adjust if you’re on a very new Symfony version).
+
+Code you can adapt
+
+1) Entity: Employe (local user)
+
+- File: src/Entity/Employe.php
+
+```php
+<?php
+
+namespace App\Entity;
+
+use Doctrine\ORM\Mapping as ORM;
+use Symfony\Component\Security\Core\User\UserInterface;
+
+#[ORM\Entity()]
+class Employe implements UserInterface
+{
+    #[ORM\Id]
+    #[ORM\GeneratedValue]
+    #[ORM\Column(type: 'integer')]
+    private ?int $id = null;
+
+    #[ORM\Column(type: 'string', unique: true)]
+    private string $username;
+
+    // store roles as JSON in DB
+    #[ORM\Column(type: 'json')]
+    private array $roles = [];
+
+    public function getId(): ?int
+    {
+        return $this->id;
+    }
+
+    public function getUsername(): string
+    {
+        return $this->username;
+    }
+
+    // For Symfony < 5.3
+    public function getUserIdentifier(): string
+    {
+        return $this->username;
+    }
+
+    public function setUsername(string $username): self
+    {
+        $this->username = $username;
+        return $this;
+    }
+
+    public function getRoles(): array
+    {
+        // ensure at least a basic role
+        $roles = $this->roles;
+        $roles[] = 'ROLE_USER';
+        return array_unique($roles);
+    }
+
+    public function setRoles(array $roles): self
+    {
+        $this->roles = $roles;
+        return $this;
+    }
+
+    // Password isn't used (LDAP auth), but methods exist for compatibility
+    public function getPassword(): ?string { return null; }
+    public function getSalt(): ?string { return null; }
+    public function eraseCredentials(): void { /* nothing to erase */ }
+}
+```
+
+2) LDAP authentication service (no bundle)
+
+- File: src/Service/LdapAuthService.php
+
+```php
+<?php
+
+namespace App\Service;
+
+class LdapAuthService
+{
+    private string $host;
+    private int    $port;
+    private string $baseDn;
+    private string $serviceUserDn;
+    private string $serviceUserPassword;
+    private array  $groupToRoleMap;
+
+    public function __construct(
+        string $host,
+        int $port,
+        string $baseDn,
+        string $serviceUserDn,
+        string $serviceUserPassword,
+        array $groupToRoleMap = []
+    ) {
+        $this->host = $host;
+        $this->port = $port;
+        $this->baseDn = $baseDn;
+        $this->serviceUserDn = $serviceUserDn;
+        $this->serviceUserPassword = $serviceUserPassword;
+        $this->groupToRoleMap = $groupToRoleMap;
+    }
+
+    public function escapeLdapFilter(string $value): string
+    {
+        // minimal escaping for LDAP search filter
+        return str_replace(
+            ['*', '(', ')', '\\', "\0"],
+            ['\2a', '\28', '\29', '\5c', '\00'],
+            $value
+        );
+    }
+
+    public function authenticate(string $username, string $password): ?array
+    {
+        // Determine LDAP scheme
+        $scheme = (stripos($this->host, 'ldaps://') === 0 || $this->port === 636) ? 'ldaps' : 'ldap';
+        $dsn = "{$scheme}://{$this->host}:{$this->port}";
+
+        $ds = ldap_connect($dsn);
+        if (!$ds) {
+            return null;
+        }
+
+        ldap_set_option($ds, LDAP_OPT_PROTOCOL_VERSION, 3);
+        ldap_set_option($ds, LDAP_OPT_REFERRALS, 0);
+
+        // Bind as service account to search
+        if (!@ldap_bind($ds, $this->serviceUserDn, $this->serviceUserPassword)) {
+            ldap_close($ds);
+            return null;
+        }
+
+        // Search for user by sAMAccountName
+        $baseDn = $this->baseDn;
+        $filter = '(&(objectClass=user)(sAMAccountName=' . $this->escapeLdapFilter($username) . '))';
+        $result = ldap_search($ds, $baseDn, $filter, ['dn', 'memberof']);
+        if (!$result) {
+            ldap_close($ds);
+            return null;
+        }
+
+        $entries = ldap_get_entries($ds, $result);
+        if (!isset($entries['count']) || $entries['count'] == 0) {
+            ldap_close($ds);
+            return null;
+        }
+
+        // Get DN of the user
+        $userDn = $entries[0]['dn'] ?? null;
+        if (!$userDn) {
+            ldap_close($ds);
+            return null;
+        }
+
+        // Try to bind as the user to verify password
+        $bindUser = @ldap_bind($ds, $userDn, $password);
+        if (!$bindUser) {
+            ldap_close($ds);
+            return null;
+        }
+
+        // Build roles from memberOf (AD groups)
+        $groups = [];
+        if (isset($entries[0]['memberof'])) {
+            // entries[0]['memberof'] contains "count" and group DNs
+            foreach ($entries[0]['memberof'] as $key => $val) {
+                if ($key === 'count') continue;
+                if (is_string($val)) {
+                    $groups[] = $val;
+                }
+            }
+        }
+
+        $roles = $this->mapLdapGroupsToRoles($groups);
+
+        ldap_close($ds);
+
+        return [
+            'username' => $username,
+            'roles' => $roles,
+        ];
+    }
+
+    private function mapLdapGroupsToRoles(array $groups): array
+    {
+        $roles = [];
+        foreach ($groups as $groupDn) {
+            foreach ($this->groupToRoleMap as $pattern => $role) {
+                if (strpos($groupDn, $pattern) !== false) {
+                    $roles[] = $role;
+                }
+            }
+        }
+        // Ensure at least User role
+        if (empty($roles)) {
+            $roles[] = 'ROLE_USER';
+        }
+        return array_values(array_unique($roles));
+    }
+}
+```
+
+Notes:
+- Replace the host/port/baseDn/serviceUserDn/password and group-to-role map with values that reflect your AD structure.
+- Use LDAPS (port 636) or startTLS as appropriate in your environment.
+
+3) JWT service (token creation and validation)
+
+- File: src/Service/JwtService.php
+
+```php
+<?php
+
+namespace App\Service;
+
+class JwtService
+{
+    private string $secret;
+    private int $ttl; // seconds
+
+    public function __construct(string $secret, int $ttl = 3600)
+    {
+        $this->secret = $secret;
+        $this->ttl = $ttl;
+    }
+
+    public function createToken(array $payload): string
+    {
+        $header = json_encode(['alg' => 'HS256', 'typ' => 'JWT']);
+        $now = time();
+        $payload['iat'] = $now;
+        $payload['exp'] = $now + $this->ttl;
+
+        $encodedHeader  = $this->base64UrlEncode($header);
+        $encodedPayload = $this->base64UrlEncode(json_encode($payload));
+
+        $signature = hash_hmac('sha256', "{$encodedHeader}.{$encodedPayload}", $this->secret, true);
+        $encodedSignature = $this->base64UrlEncode($signature);
+
+        return "{$encodedHeader}.{$encodedPayload}.{$encodedSignature}";
+    }
+
+    public function decodeToken(string $token): ?array
+    {
+        $parts = explode('.', $token);
+        if (count($parts) !== 3) {
+            return null;
+        }
+        [$headerB64, $payloadB64, $signatureB64] = $parts;
+
+        // Validate format
+        $headerJson = $this->base64UrlDecode($headerB64);
+        $payloadJson = $this->base64UrlDecode($payloadB64);
+        $header = json_decode($headerJson, true);
+        $payload = json_decode($payloadJson, true);
+
+        if (!$header || !$payload || !isset($header['alg']) || $header['alg'] !== 'HS256') {
+            return null;
+        }
+
+        // Verify signature
+        $expectedSig = $this->base64UrlDecode($signatureB64);
+        $actualSig = hash_hmac('sha256', "{$headerB64}.{$payloadB64}", $this->secret, true);
+        if (!hash_equals($actualSig, $expectedSig)) {
+            return null;
+        }
+
+        // Check expiration
+        if (isset($payload['exp']) && time() > (int) $payload['exp']) {
+            return null;
+        }
+
+        return $payload;
+    }
+
+    private function base64UrlEncode(string $data): string
+    {
+        return rtrim(strtr(base64_encode($data), '+/', '-_'), '=');
+    }
+
+    private function base64UrlDecode(string $data): string
+    {
+        $pad = 4 - (strlen($data) % 4);
+        if ($pad < 4) {
+            $data .= str_repeat('=', $pad);
+        }
+        return base64_decode(strtr($data, '-_', '+/'));
+    }
+}
+```
+
+4) Controller: login endpoint to issue a token
+
+- File: src/Controller/AuthController.php
+
+```php
+<?php
+
+namespace App\Controller;
+
+use App\Service\LdapAuthService;
+use App\Service\JwtService;
+use App\Entity\Employe;
+use App\Repository\EmployeRepository;
+use Doctrine\ORM\EntityManagerInterface;
+use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
+use Symfony\Component\HttpFoundation\JsonResponse;
+use Symfony\Component\HttpFoundation\Request;
+use Symfony\Component\Routing\Annotation\Route;
+
+class AuthController extends AbstractController
+{
+    private LdapAuthService $ldap;
+    private JwtService $jwt;
+    private EntityManagerInterface $em;
+    private EmployeRepository $employeRepo;
+
+    public function __construct(
+        LdapAuthService $ldap,
+        JwtService $jwt,
+        EntityManagerInterface $em,
+        EmployeRepository $repo
+    ) {
+        $this->ldap = $ldap;
+        $this->jwt = $jwt;
+        $this->em = $em;
+        $this->employeRepo = $repo;
+    }
+
+    #[Route('/api/login', name: 'api_login', methods: ['POST'])]
+    public function login(Request $request): JsonResponse
+    {
+        $data = json_decode($request->getContent(), true);
+        $username = $data['username'] ?? null;
+        $password = $data['password'] ?? null;
+
+        if (!$username || !$password) {
+            return new JsonResponse(['error' => 'Missing credentials'], JsonResponse::HTTP_BAD_REQUEST);
+        }
+
+        // LDAP authentication
+        $auth = $this->ldap->authenticate($username, $password);
+        if ($auth === null) {
+            return new JsonResponse(['error' => 'Invalid credentials'], JsonResponse::HTTP_UNAUTHORIZED);
+        }
+
+        // Find or create local Employe
+        $user = $this->employeRepo->findOneBy(['username' => $auth['username']]);
+        if (!$user) {
+            $user = new Employe();
+            $user->setUsername($auth['username']);
+            $user->setRoles($auth['roles']);
+            $this->em->persist($user);
+            $this->em->flush();
+        } else {
+            // keep roles in sync with AD
+            $user->setRoles($auth['roles']);
+            $this->em->flush();
+        }
+
+        // Create JWT
+        $payload = [
+            'sub' => (string) $user->getId(),
+            'username' => $user->getUsername(),
+            'roles' => $user->getRoles(),
+        ];
+        $token = $this->jwt->createToken($payload);
+
+        return new JsonResponse([
+            'token' => $token,
+            'expires_in' => 3600,
+            'user' => [
+                'id' => $user->getId(),
+                'username' => $user->getUsername(),
+                'roles' => $user->getRoles(),
+            ]
+        ]);
+    }
+}
+```
+
+5) Security integration (basic Guard-like approach)
+
+If you’re using Symfony 5 with Guard (or a custom authenticator), you’d wire up a JWT guard so protected routes check the token. Here’s a lightweight skeleton to illustrate the idea (you’ll need to fill in the wiring for your version of Symfony):
+
+- Security config (example for Symfony 5.x, adjust to your version)
+
+- File: config/packages/security.yaml
+
+```yaml
+security:
+  providers:
+    app_user_provider:
+      entity:
+        class: App\Entity\Employe
+        property: username
+
+  firewalls:
+    dev:
+      pattern: ^/(_(profiler|wdt)|css|images|js)/
+      security: false
+
+    api_login:
+      pattern: ^/api/login
+      stateless: true
+      anonymous: true
+
+    api:
+      pattern: ^/api
+      stateless: true
+      anonymous: false
+      provider: app_user_provider
+      guard:
+        authenticators:
+          - App\Security\JwtAuthenticator
+
+  access_control:
+    - { path: ^/api/login, roles: PUBLIC_ACCESS }
+    - { path: ^/api, roles: IS_AUTHENTICATED_FULLY }
+```
+
+- JWT Authenticator skeleton (Guard-style)
+
+- File: src/Security/JwtAuthenticator.php
+
+```php
+<?php
+
+namespace App\Security;
+
+use App\Service\JwtService;
+use App\Repository\EmployeRepository;
+use Symfony\Component\Security\Core\Exception\AuthenticationException;
+use Symfony\Component\Security\Core\User\UserInterface;
+use Symfony\Component\Security\Core\User\UserProviderInterface;
+use Symfony\Component\Security\Guard\AbstractGuardAuthenticator;
+use Symfony\Component\HttpFoundation\Request;
+use Symfony\Component\Security\Core\Authentication\Token\TokenInterface;
+use Symfony\Component\Security\Core\Authentication\Token\UsernamePasswordToken;
+
+class JwtAuthenticator extends AbstractGuardAuthenticator
+{
+    private JwtService $jwt;
+    private EmployeRepository $repository;
+
+    public function __construct(JwtService $jwt, EmployeRepository $repository)
+    {
+        $this->jwt = $jwt;
+        $this->repository = $repository;
+    }
+
+    public function supports(Request $request): bool
+    {
+        return $request->headers->has('Authorization') &&
+               0 === strpos($request->headers->get('Authorization'), 'Bearer ');
+    }
+
+    public function getCredentials(Request $request)
+    {
+        return substr($request->headers->get('Authorization'), 7);
+    }
+
+    public function getUser($credentials, UserProviderInterface $userProvider): ?UserInterface
+    {
+        $payload = $this->jwt->decodeToken($credentials);
+        if (!$payload || !isset($payload['sub'])) {
+            return null;
+        }
+
+        $id = $payload['sub'];
+        return $this->repository->find($id);
+    }
+
+    public function checkCredentials($credentials, UserInterface $user): bool
+    {
+        // Credentials already validated by token signature/exp during decode
+        return true;
+    }
+
+    public function onAuthenticationSuccess(Request $request, TokenInterface $token, string $providerKey)
+    {
+        // Let the request continue
+        return null;
+    }
+
+    public function onAuthenticationFailure(Request $request, AuthenticationException $exception)
+    {
+        return new \Symfony\Component\HttpFoundation\JsonResponse(['error' => 'Authentication failed'], 401);
+    }
+
+    public function start(Request $request, AuthenticationException $authException = null)
+    {
+        return new \Symfony\Component\HttpFoundation\JsonResponse(['error' => 'Authentication required'], 401);
+    }
+
+    public function supportsRememberMe(): bool
+    {
+        return false;
+    }
+}
+```
+
+Notes:
+- This is a minimal skeleton. Depending on your Symfony version, the exact interfaces/classes may differ (Guard vs Passport). If you’re on Symfony 6, you’d implement a Passport-based authenticator.
+
+6) How to test (quick start)
+- Configure LDAP in a service container (via services.yaml) with proper host/baseDn/service account.
+- Create an Employe DB row on first login, or auto-create from LDAP data.
+- POST to /api/login with JSON: { "username": "jdoe", "password": "secret" }.
+- You’ll get a JSON response with a token, expiration, and user info including roles.
+- Call a protected API: GET /api/some-protected with header Authorization: Bearer <token>.
+
+Security notes and tips
+- TLS everywhere for LDAP (ldaps:// and TLS for port 389 with StartTLS if possible).
+- Use a dedicated service account with minimal permissions for searching.
+- Ensure you map AD groups to your Symfony roles carefully; you can auto-assign on first login.
+- Consider token revocation/rotation strategy; for simplicity this example uses a single-token model.
+- Logging and error handling should be tightened for production to avoid leaking AD details.
+- If feasible, prefer LexikJWTAuthenticationBundle or Symfony's official JWT solution for production-grade security and standard-compliant token handling.
+
+Would you like me to tailor this to:
+- Your Symfony version (5.x vs 6.x) and which token/auth method you want (Guard vs Passport)?
+- Your exact AD group-to-roles mapping (give me the group names, I’ll adjust the map function)?
+- Whether you want a ready-to-run security.yaml snippet with a concrete JwtAuthenticator wired up?
