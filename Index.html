@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Casatramway - Application Mobile</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+        body {
+            font-family: 'Inter', sans-serif;
+        }
+    </style>
+</head>
+<body class="bg-gradient-to-br from-blue-50 to-indigo-100 min-h-screen flex items-center justify-center p-4">
+    <div class="max-w-4xl w-full bg-white rounded-2xl shadow-xl overflow-hidden">
+        <!-- Header Section -->
+        <div class="bg-gradient-to-r from-blue-600 to-indigo-700 text-white p-8 md:p-12">
+            <h1 class="text-2xl md:text-3xl font-bold mb-2">l'Application mobile Casatramway :</h1>
+            <h2 class="text-xl md:text-2xl font-semibold">tout Casa dans votre poche !</h2>
+        </div>
+        
+        <!-- Features Section -->
+        <div class="p-8 md:p-12">
+            <div class="space-y-6">
+                <!-- Feature 1 -->
+                <div class="flex items-start">
+                    <div class="bg-blue-100 text-blue-600 p-2 rounded-lg mr-4 mt-1">
+                        <i class="fas fa-route text-lg"></i>
+                    </div>
+                    <div>
+                        <h3 class="font-semibold text-lg text-gray-800">Planification de votre trajet</h3>
+                        <p class="text-gray-600 mt-1">Accès au plan interactif</p>
+                    </div>
+                </div>
+                
+                <!-- Feature 2 -->
+                <div class="flex items-start">
+                    <div class="bg-green-100 text-green-600 p-2 rounded-lg mr-4 mt-1">
+                        <i class="fas fa-clock text-lg"></i>
+                    </div>
+                    <div>
+                        <h3 class="font-semibold text-lg text-gray-800">Horaires de passage des tramways et des busways</h3>
+                        <p class="text-gray-600 mt-1">Information en live sur le trafic</p>
+                    </div>
+                </div>
+                
+                <!-- Feature 3 -->
+                <div class="flex items-start">
+                    <div class="bg-purple-100 text-purple-600 p-2 rounded-lg mr-4 mt-1">
+                        <i class="fas fa-user-circle text-lg"></i>
+                    </div>
+                    <div>
+                        <h3 class="font-semibold text-lg text-gray-800">Infos liées à votre compte personnel</h3>
+                        <p class="text-gray-600 mt-1">E-boutique (en cours)</p>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Divider -->
+            <div class="border-t border-gray-200 my-8"></div>
+            
+            <!-- Download Section -->
+            <div class="text-center">
+                <p class="text-gray-700 mb-6">
+                    <strong>Téléchargez gratuitement l'application mobile officielle du réseau Casatramway & Casabusway opéré par RATP Dev Casablanca.</strong>
+                </p>
+                
+                <div class="flex flex-col md:flex-row justify-center gap-4">
+                    <!-- App Store -->
+                    <a href="#" class="bg-black text-white px-6 py-3 rounded-lg flex items-center justify-center gap-2 hover:bg-gray-800 transition-colors">
+                        <i class="fab fa-apple text-xl"></i>
+                        <div class="text-left">
+                            <div class="text-xs">Télécharger sur</div>
+                            <div class="font-semibold">App Store</div>
+                        </div>
+                    </a>
+                    
+                    <!-- Google Play -->
+                    <a href="#" class="bg-black text-white px-6 py-3 rounded-lg flex items-center justify-center gap-2 hover:bg-gray-800 transition-colors">
+                        <i class="fab fa-google-play text-xl"></i>
+                        <div class="text-left">
+                            <div class="text-xs">Disponible sur</div>
+                            <div class="font-semibold">Google Play</div>
+                        </div>
+                    </a>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Footer -->
+        <div class="bg-gray-100 p-4 text-center text-gray-600 text-sm">
+            © RATP Dev Casablanca - Tous droits réservés
+        </div>
+    </div>
+</body>
+</html>
